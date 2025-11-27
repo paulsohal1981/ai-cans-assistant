@@ -297,7 +297,7 @@ Start the conversation by introducing yourself as Owly and asking for the child'
             const [apiKey, setApiKey] = React.useState(() => {
                 const storedKey = localStorage.getItem("cans_api_key");
                 if (storedKey) return storedKey;
-                const userKey = window.prompt("Please enter your Google Gemini API Key:");
+                const userKey = window.prompt("Please enter your Google Gemini API Key (get one at https://aistudio.google.com/app/apikey):");
                 if (userKey) {
                     localStorage.setItem("cans_api_key", userKey);
                     return userKey;
