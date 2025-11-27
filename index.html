@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Owly | CANS Assistant</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        owly: {
+                            teal: '#1A7E94', // Teal from logo
+                            gold: '#E8A919', // Gold from logo
+                            dark: '#0F4C59',
+                            light: '#E6F3F5',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- React & ReactDOM -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <!-- Babel for JSX -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <!-- Import Map for Modules -->
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/generative-ai": "https://esm.run/@google/generative-ai",
+          "lucide-react": "https://esm.sh/lucide-react@0.294.0"
+        }
+      }
+    </script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Quicksand:wght@300;400;500;600;700&display=swap');
+
+        body {
+            font-family: 'Quicksand', sans-serif;
+        }
+
+        /* Custom scrollbar for chat */
+        .scrollbar-hide::-webkit-scrollbar {
+            display: none;
+        }
+
+        .scrollbar-hide {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+
+        .typing-dot {
+            animation: typing 1.4s infinite ease-in-out both;
+        }
+
+        .typing-dot:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+
+        .typing-dot:nth-child(2) {
+            animation-delay: -0.16s;
+        }
+
+        @keyframes typing {
+
+            0%,
+            80%,
+            100% {
+                transform: scale(0);
+            }
+
+            40% {
+                transform: scale(1);
+            }
+        }
+
+        .fade-in {
+            animation: fadeIn 0.5s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-slate-50 text-slate-900 h-screen overflow-hidden">
+    <div id="root" class="h-full"></div>
+
+    <script type="text/babel" data-type="module">
+        import { GoogleGenerativeAI } from "@google/generative-ai";
+        import * as LucideIcons from "lucide-react";
+
+        // --- CANS Data Structure ---
+        const CANS_DOMAINS = {
+            "Life Functioning": [
+                { id: "FamilyFunctioning", label: "Family Functioning", desc: "Relationships with family members." },
+                { id: "LivingSituation", label: "Living Situation", desc: "Functioning in current living environment." },
+                { id: "SocialFunctioning", label: "Social Functioning", desc: "Relationships with peers/others." },
+                { id: "AcademicFunctioning", label: "School", desc: "Attendance, behavior, and achievement." },
+                { id: "MedicalPhysical", label: "Medical/Physical", desc: "Current health status." },
+                { id: "Sleep", label: "Sleep", desc: "Sleep patterns and hygiene." }
+            ],
+            "Behavioral/Emotional Needs": [
+                { id: "AngerControl", label: "Anger Control", desc: "Ability to manage anger/frustration." },
+                { id: "Depression", label: "Depression", desc: "Mood, irritability, loss of interest." },
+                { id: "Anxiety", label: "Anxiety", desc: "Worries, fears, or panic." },
+                { id: "Oppositional", label: "Oppositional", desc: "Compliance with authority." },
+                { id: "AdjustmentToTrauma", label: "Adjustment to Trauma", desc: "Impact of traumatic experiences." }
+            ],
+            "Risk Behaviors": [
+                { id: "SuicideRisk", label: "Suicide Risk", desc: "Thoughts or attempts of self-harm." },
+                { id: "DangerToOthers", label: "Danger to Others", desc: "Aggression or violence towards others." }
+            ]
+        };
+
+        const SYSTEM_PROMPT = `You are "Owly", an expert Clinical Assessor conducting an interview to complete the CANS (Child and Adolescent Needs and Strengths) Standard Comprehensive 3.0 assessment.
+
+Your Role:
+1. Act as a professional, empathetic, and wise LCSW (Licensed Clinical Social Worker).
+2. Interview the user (caregiver) to gather information for the CANS domains.
+3. Ask one question at a time. Do not overwhelm the user.
+4. Use open-ended questions (e.g., "Tell me about how he gets along with his siblings").
+
+CRITICAL TASK - RATING:
+When the user provides enough information to determine a rating (0, 1, 2, or 3) for a specific item, you MUST output a special JSON block HIDDEN in your response. 
+
+The Rating Scale:
+0 = No evidence of need.
+1 = History of need or mild suspicion; watchful waiting.
+2 = Moderate need; action is required.
+3 = Severe need; dangerous or disabling; immediate action required.
+
+JSON Format:
+|||{"id": "ExactItemID", "rating": 0-3, "rationale": "Brief clinical justification"}|||
+
+Rules for Output:
+- You can include multiple JSON blocks if the user answers multiple things at once.
+- Do NOT mention the numeric rating in your spoken text. Just say "I understand" or "Thank you for sharing that."
+- After rating an item, smoothly transition to the next relevant topic.
+
+Items to Rate (use these IDs exactly):
+${Object.values(CANS_DOMAINS).flat().map(i => i.id).join(", ")}
+
+Start the conversation by introducing yourself as Owly and asking for the child's name and age.`;
+
+        // --- Components ---
+
+        // Robust React Icon Component using lucide-react
+        const Icon = ({ name, size = 16, className }) => {
+            if (!name) return null;
+
+            // Convert kebab-case to PascalCase (e.g., 'file-text' -> 'FileText')
+            const pascalName = name
+                .split('-')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+                .join('');
+
+            const IconComp = LucideIcons[pascalName];
+
+            if (!IconComp) {
+                return <span className={`inline-block w-4 h-4 bg-gray-200 ${className}`}></span>;
+            }
+
+            return <IconComp size={size} className={className} />;
+        };
+
+        // Interactive Rating Selector
+        const RatingSelector = ({ currentRating, onRate }) => {
+            const activeClass = (r) => {
+                switch (r) {
+                    case 0: return "bg-emerald-100 text-emerald-700 border-emerald-400 ring-1 ring-emerald-400";
+                    case 1: return "bg-yellow-100 text-yellow-700 border-yellow-400 ring-1 ring-yellow-400";
+                    case 2: return "bg-orange-100 text-orange-700 border-orange-400 ring-1 ring-orange-400";
+                    case 3: return "bg-red-100 text-red-700 border-red-400 ring-1 ring-red-400";
+                    default: return "";
+                }
+            };
+
+            const baseClass = "w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border transition-all cursor-pointer hover:scale-110";
+            const inactiveClass = "bg-white border-slate-200 text-slate-400 hover:bg-slate-50 hover:border-slate-300";
+
+            return (
+                <div className="flex gap-1.5">
+                    {[0, 1, 2, 3].map(r => (
+                        <button
+                            key={r}
+                            onClick={() => onRate(r)}
+                            className={`${baseClass} ${currentRating === r ? activeClass(r) : inactiveClass}`}
+                            title={`Rate ${r}`}
+                        >
+                            {r}
+                        </button>
+                    ))}
+                </div>
+            );
+        };
+
+        const RatingBadge = ({ rating }) => {
+            if (rating === null || rating === undefined) return <span className="w-6 h-6 rounded-full bg-slate-100 border border-slate-200"></span>;
+
+            const colors = {
+                0: "bg-emerald-50 text-emerald-700 border-emerald-200",
+                1: "bg-yellow-50 text-yellow-700 border-yellow-200",
+                2: "bg-orange-50 text-orange-700 border-orange-200",
+                3: "bg-red-50 text-red-700 border-red-200"
+            };
+            return (
+                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold border ${colors[rating]}`}>
+                    {rating}
+                </div>
+            );
+        };
+
+        const FormItem = ({ item, data, onRate }) => {
+            return (
+                <div className={`p-3 rounded-lg border mb-2 transition-all duration-300 ${data ? 'bg-white border-owly-teal shadow-sm' : 'bg-slate-50 border-slate-100 opacity-90'}`}>
+                    <div className="flex justify-between items-start mb-1">
+                        <div>
+                            <h4 className="font-semibold text-sm text-slate-800">{item.label}</h4>
+                            <p className="text-xs text-slate-500">{item.desc}</p>
+                        </div>
+                        <RatingSelector
+                            currentRating={data?.rating}
+                            onRate={onRate}
+                        />
+                    </div>
+                    {data && (
+                        <div className="mt-2 text-xs bg-owly-light/50 p-2 rounded text-slate-600 italic border-l-2 border-owly-teal">
+                            "{data.rationale}"
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const ChatMessage = ({ msg }) => {
+            const isAI = msg.role === 'model';
+            return (
+                <div className={`flex w-full mb-6 ${isAI ? 'justify-start' : 'justify-end'}`}>
+                    <div className={`flex gap-3 max-w-[85%] ${isAI ? 'flex-row' : 'flex-row-reverse'}`}>
+                        {/* Avatar */}
+                        <div className={`w-9 h-9 rounded-full flex-shrink-0 flex items-center justify-center shadow-sm border-2 ${isAI ? 'bg-white border-owly-gold' : 'bg-slate-200 border-white text-slate-500'}`}>
+                            {isAI ? (
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-5 h-5 text-owly-teal">
+                                    <path d="M12 2a7 7 0 0 1 7.05 5.5C20.9 8 22 9.4 22 11c0 2.8-2.2 5-5 5h-10C4.2 16 2 13.8 2 11c0-1.6 1.1-3 2.95-3.5A7 7 0 0 1 12 2z" />
+                                    <circle cx="9" cy="10" r="1.5" fill="#E8A919" stroke="none" />
+                                    <circle cx="15" cy="10" r="1.5" fill="#E8A919" stroke="none" />
+                                </svg>
+                            ) : <Icon name="user" size={20} />}
+                        </div>
+
+                        {/* Bubble */}
+                        <div className={`p-3.5 rounded-2xl text-sm shadow-sm leading-relaxed ${isAI
+                                ? 'bg-white text-slate-800 border border-slate-200 rounded-tl-none'
+                                : 'bg-owly-teal text-white rounded-tr-none'
+                            }`}>
+                            {msg.text}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const TabButton = ({ active, label, icon, onClick }) => (
+            <button
+                onClick={onClick}
+                className={`flex items-center gap-2 px-4 py-3 text-sm font-bold border-b-4 transition-colors ${active
+                        ? 'border-owly-gold text-owly-teal bg-owly-light/30'
+                        : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+                    }`}
+            >
+                <Icon name={icon} size={16} />
+                {label}
+            </button>
+        );
+
+        const App = () => {
+            const [apiKey] = React.useState("AIzaSyBE-AAa6ssMVMpeZgtUj42HMjThHYnsa2A");
+            const [messages, setMessages] = React.useState([]);
+            const [input, setInput] = React.useState("");
+            const [loading, setLoading] = React.useState(false);
+            const [cansRatings, setCansRatings] = React.useState({});
+            const [chatSession, setChatSession] = React.useState(null);
+            const [activeTab, setActiveTab] = React.useState("form"); // form, report, plan, analytics
+
+            // Feature States
+            const [narrativeReport, setNarrativeReport] = React.useState("");
+            const [generatingReport, setGeneratingReport] = React.useState(false);
+            const [carePlan, setCarePlan] = React.useState({});
+            const [generatingPlanId, setGeneratingPlanId] = React.useState(null);
+
+            const scrollRef = React.useRef(null);
+
+            React.useEffect(() => {
+                if (scrollRef.current) {
+                    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                }
+            }, [messages, loading]);
+
+            // Auto-initialize chat on mount
+            React.useEffect(() => {
+                if (apiKey) {
+                    initializeChat(apiKey);
+                }
+            }, [apiKey]);
+
+            const initializeChat = async (key) => {
+                try {
+                    const genAI = new GoogleGenerativeAI(key);
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-09-2025" });
+
+                    const chat = model.startChat({
+                        history: [
+                            { role: "user", parts: [{ text: "Start the CANS assessment." }] },
+                            { role: "model", parts: [{ text: "Hello! I'm Owly, your CANS Assistant. I'll be helping you complete the assessment today. To get started, could you please tell me the first name and age of the child we are discussing?" }] }
+                        ],
+                        // FIXED: systemInstruction is now an object, not a raw string
+                        systemInstruction: {
+                            parts: [{ text: SYSTEM_PROMPT }]
+                        },
+                    });
+
+                    setChatSession(chat);
+                    setMessages([{ role: "model", text: "Hello! I'm Owly, your CANS Assistant. I'll be helping you complete the assessment today. To get started, could you please tell me the first name and age of the child we are discussing?" }]);
+                } catch (error) {
+                    setMessages(prev => [...prev, { role: "model", text: "System Error: Unable to initialize AI. Please check network connection." }]);
+                }
+            };
+
+            // Logic for Manual Rating
+            const handleManualRate = (itemId, rating) => {
+                setCansRatings(prev => ({
+                    ...prev,
+                    [itemId]: {
+                        ...prev[itemId], // keep id if exists
+                        id: itemId,
+                        rating: rating,
+                        // Preserve existing rationale if AI generated it, otherwise set default
+                        rationale: prev[itemId]?.rationale || "Manually rated."
+                    }
+                }));
+            };
+
+            const handleSend = async () => {
+                if (!input.trim() || !chatSession) return;
+                const userMsg = input;
+                setInput("");
+                setMessages(prev => [...prev, { role: "user", text: userMsg }]);
+                setLoading(true);
+
+                try {
+                    const result = await chatSession.sendMessage(userMsg);
+                    const responseText = result.response.text();
+
+                    // Robust JSON Extraction
+                    const jsonRegex = /\|\|\|(.*?)\|\|\|/gs;
+                    let match;
+                    let cleanText = responseText;
+                    let newRatings = {};
+
+                    jsonRegex.lastIndex = 0;
+
+                    while ((match = jsonRegex.exec(responseText)) !== null) {
+                        try {
+                            const jsonStr = match[1];
+                            if (jsonStr && jsonStr.trim().startsWith('{')) {
+                                const ratingObj = JSON.parse(jsonStr);
+                                if (ratingObj && ratingObj.id) {
+                                    newRatings[ratingObj.id] = ratingObj;
+                                }
+                            }
+                            cleanText = cleanText.replace(match[0], "");
+                        } catch (e) {
+                            console.error("JSON Parse Error:", e);
+                        }
+                    }
+
+                    if (Object.keys(newRatings).length > 0) {
+                        setCansRatings(prev => ({ ...prev, ...newRatings }));
+                    }
+                    setMessages(prev => [...prev, { role: "model", text: cleanText.trim() }]);
+                } catch (error) {
+                    console.error("Chat Error:", error);
+                    setMessages(prev => [...prev, { role: "model", text: "I encountered an error. Please try again." }]);
+                } finally {
+                    setLoading(false);
+                }
+            };
+
+            // --- Export Feature ---
+            const handleExport = () => {
+                const date = new Date().toLocaleDateString();
+                const time = new Date().toLocaleTimeString();
+
+                let content = `OWLY CANS ASSESSMENT SUMMARY\n`;
+                content += `Generated by Owly Assistant\n`;
+                content += `Date: ${date} ${time}\n`;
+                content += `=================================================\n\n`;
+
+                // 1. Assessment Ratings
+                content += `PART 1: ASSESSMENT RATINGS & RATIONALE\n`;
+                content += `-------------------------------------------------\n`;
+
+                let hasRatings = false;
+                Object.entries(CANS_DOMAINS).forEach(([domain, items]) => {
+                    let domainHasRatings = items.some(item => cansRatings[item.id]);
+                    if (domainHasRatings) {
+                        hasRatings = true;
+                        content += `\n[ ${domain.toUpperCase()} ]\n`;
+                        items.forEach(item => {
+                            const rating = cansRatings[item.id];
+                            if (rating) {
+                                content += `  • ${item.label}: (${rating.rating})\n`;
+                                content += `    Rationale: "${rating.rationale}"\n`;
+                            }
+                        });
+                    }
+                });
+
+                if (!hasRatings) content += "No items have been rated yet.\n";
+
+                // 2. Narrative Report
+                content += `\n\nPART 2: CLINICAL NARRATIVE REPORT\n`;
+                content += `-------------------------------------------------\n`;
+                if (narrativeReport) {
+                    content += `${narrativeReport}\n`;
+                } else {
+                    content += "No clinical narrative has been generated yet.\n";
+                }
+
+                // 3. Care Plan
+                content += `\n\nPART 3: CARE PLAN & INTERVENTIONS\n`;
+                content += `-------------------------------------------------\n`;
+                if (Object.keys(carePlan).length > 0) {
+                    Object.entries(carePlan).forEach(([id, planHtml]) => {
+                        const label = Object.values(CANS_DOMAINS).flat().find(i => i.id === id)?.label || id;
+                        const planText = planHtml
+                            .replace(/<ul>/g, '')
+                            .replace(/<\/ul>/g, '')
+                            .replace(/<li>/g, '  - ')
+                            .replace(/<\/li>/g, '\n')
+                            .replace(/<[^>]*>/g, '');
+
+                        content += `\nITEM: ${label.toUpperCase()}\n`;
+                        content += `SUGGESTED INTERVENTIONS:\n${planText}`;
+                    });
+                } else {
+                    content += "No care plan interventions have been generated yet.\n";
+                }
+
+                content += `\n\n=================================================\n`;
+                content += `End of Report`;
+
+                const blob = new Blob([content], { type: 'text/plain' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `Owly_CANS_Assessment_${new Date().toISOString().slice(0, 10)}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            };
+
+            // --- Feature 1: Generate Clinical Narrative ---
+            const generateNarrative = async () => {
+                if (Object.keys(cansRatings).length === 0) return;
+                setGeneratingReport(true);
+                setNarrativeReport("");
+                try {
+                    const genAI = new GoogleGenerativeAI(apiKey);
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-09-2025" });
+
+                    const prompt = `
+                        Role: Clinical Scribe using CANS language.
+                        Task: Write a professional, clinical narrative summary (1-2 paragraphs) for a medical record based on the following CANS assessment data.
+                        Tone: Objective, strengths-based, professional.
+                        Data: ${JSON.stringify(cansRatings)}
+                        
+                        Structure:
+                        - Start with an overview of strengths (ratings of 0 or 1).
+                        - Discuss identified needs (ratings of 2 or 3) and their impact.
+                        - Do not list scores numerically; describe them qualitatively.
+                    `;
+
+                    const result = await model.generateContent(prompt);
+                    setNarrativeReport(result.response.text());
+                } catch (e) {
+                    console.error(e);
+                    setNarrativeReport("Error generating report. Please try again.");
+                } finally {
+                    setGeneratingReport(false);
+                }
+            };
+
+            // --- Feature 2: Generate Care Plan Interventions ---
+            const generateInterventions = async (itemId, itemLabel, rating) => {
+                setGeneratingPlanId(itemId);
+                try {
+                    const genAI = new GoogleGenerativeAI(apiKey);
+                    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash-preview-09-2025" });
+
+                    const prompt = `
+                        Role: Clinical Supervisor.
+                        Task: Suggest 3 specific, evidence-based interventions for a child with a CANS rating of ${rating} on the item "${itemLabel}".
+                        Output format: Valid HTML <ul> with <li> tags. No markdown.
+                        Constraint: Keep suggestions actionable and concise.
+                    `;
+
+                    const result = await model.generateContent(prompt);
+                    setCarePlan(prev => ({ ...prev, [itemId]: result.response.text() }));
+                } catch (e) {
+                    console.error(e);
+                } finally {
+                    setGeneratingPlanId(null);
+                }
+            };
+
+            // --- Analytics Helpers ---
+            const calculateActionableNeeds = () => {
+                return Object.values(cansRatings).filter(r => r.rating >= 2).length;
+            }
+
+            const calculateDomainBreakdown = () => {
+                const breakdown = {};
+                Object.entries(CANS_DOMAINS).forEach(([domain, items]) => {
+                    breakdown[domain] = items.filter(i => cansRatings[i.id]?.rating >= 2).length;
+                });
+                return breakdown;
+            }
+
+            const getHighestPriorityItems = () => {
+                return Object.values(cansRatings).filter(r => r.rating === 3);
+            }
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                }
+            };
+
+            return (
+                <div className="flex flex-col md:flex-row h-screen max-w-7xl mx-auto shadow-2xl bg-white overflow-hidden">
+
+                    {/* LEFT PANEL: Chat Interface */}
+                    <div className="flex flex-col w-full md:w-5/12 border-r border-slate-200 bg-slate-50 h-full relative z-10">
+                        {/* BRANDED HEADER */}
+                        <div className="p-5 bg-white border-b border-slate-200 flex justify-between items-center shadow-sm z-20">
+                            <div>
+                                <div className="h-12 flex items-center">
+                                    {/* Using the external Logo Image URL */}
+                                    <img src="https://www.opeeka.com/wp-content/uploads/2023/01/logo-horizontal.png" alt="Owly Logo" className="h-full w-auto object-contain" />
+                                </div>
+                            </div>
+                            <span className="bg-owly-light text-owly-teal text-xs px-3 py-1 rounded-full font-bold border border-owly-teal/20">
+                                CANS 3.0
+                            </span>
+                        </div>
+
+                        {/* Messages Area */}
+                        <div className="flex-1 overflow-y-auto p-4 scrollbar-hide bg-white" ref={scrollRef}>
+                            {messages.map((m, idx) => <ChatMessage key={idx} msg={m} />)}
+                            {loading && (
+                                <div className="flex w-full mb-6 justify-start">
+                                    <div className="bg-white p-3 rounded-2xl rounded-tl-none border border-slate-200 shadow-sm flex gap-1 items-center ml-12">
+                                        <div className="w-2 h-2 bg-owly-teal rounded-full typing-dot"></div>
+                                        <div className="w-2 h-2 bg-owly-teal rounded-full typing-dot"></div>
+                                        <div className="w-2 h-2 bg-owly-teal rounded-full typing-dot"></div>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Input Area */}
+                        <div className="p-4 bg-white border-t border-slate-200">
+                            <div className="relative">
+                                <textarea
+                                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 pr-12 focus:ring-2 focus:ring-owly-teal focus:border-transparent transition-all resize-none text-sm shadow-inner"
+                                    rows="2"
+                                    placeholder="Type your response here..."
+                                    value={input}
+                                    onChange={(e) => setInput(e.target.value)}
+                                    onKeyDown={handleKeyDown}
+                                ></textarea>
+                                <button
+                                    onClick={handleSend}
+                                    disabled={loading || !input.trim()}
+                                    className="absolute right-2 bottom-2 p-2 bg-owly-teal hover:bg-owly-dark text-white rounded-lg transition-colors disabled:opacity-50 shadow-md"
+                                >
+                                    <Icon name="send" size={16} />
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* RIGHT PANEL: Features Tabs */}
+                    <div className="flex flex-col w-full md:w-7/12 bg-white h-full overflow-hidden">
+
+                        {/* Tab Header */}
+                        <div className="flex justify-between items-center border-b border-slate-200 bg-white pr-4">
+                            <div className="flex">
+                                <TabButton
+                                    active={activeTab === 'form'}
+                                    label="Assessment"
+                                    icon="clipboard-list"
+                                    onClick={() => setActiveTab('form')}
+                                />
+                                <TabButton
+                                    active={activeTab === 'report'}
+                                    label="Narrative"
+                                    icon="file-text"
+                                    onClick={() => setActiveTab('report')}
+                                />
+                                <TabButton
+                                    active={activeTab === 'plan'}
+                                    label="Care Plan"
+                                    icon="stethoscope"
+                                    onClick={() => setActiveTab('plan')}
+                                />
+                                <TabButton
+                                    active={activeTab === 'analytics'}
+                                    label="Analytics"
+                                    icon="bar-chart-3"
+                                    onClick={() => setActiveTab('analytics')}
+                                />
+                            </div>
+
+                            {/* EXPORT BUTTON */}
+                            <button
+                                onClick={handleExport}
+                                className="text-xs bg-slate-800 hover:bg-slate-900 text-white px-4 py-2 rounded-md flex items-center gap-2 transition-all shadow hover:shadow-md font-medium"
+                                title="Download Summary"
+                            >
+                                <Icon name="download" size={14} className="mr-1" /> Export Report
+                            </button>
+                        </div>
+
+                        {/* TAB CONTENT: FORM */}
+                        {activeTab === 'form' && (
+                            <div className="flex-1 overflow-y-auto p-6 scrollbar-hide bg-slate-50/50">
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                                    {Object.entries(CANS_DOMAINS).map(([domain, items]) => (
+                                        <div key={domain} className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden h-fit">
+                                            <div className="bg-white p-4 border-b border-slate-100 font-bold text-slate-800 text-sm uppercase tracking-wide flex items-center gap-2">
+                                                <div className="w-1 h-4 bg-owly-gold rounded-full"></div>
+                                                {domain}
+                                            </div>
+                                            <div className="p-3">
+                                                {items.map(item => (
+                                                    <FormItem
+                                                        key={item.id}
+                                                        item={item}
+                                                        data={cansRatings[item.id]}
+                                                        onRate={(rating) => handleManualRate(item.id, rating)} // Pass manual rate handler
+                                                    />
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                {Object.keys(cansRatings).length === 0 && (
+                                    <div className="mt-12 text-center text-slate-400 p-10 border-2 border-dashed border-slate-200 rounded-xl mx-auto max-w-md">
+                                        <div className="bg-slate-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4">
+                                            <Icon name="activity" size={32} className="text-slate-300" />
+                                        </div>
+                                        <h3 className="text-slate-600 font-medium mb-1">Awaiting Data</h3>
+                                        <p className="text-sm">Start the interview with Owly or click the numbers to rate manually.</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* TAB CONTENT: REPORT */}
+                        {activeTab === 'report' && (
+                            <div className="flex-1 overflow-y-auto p-8 scrollbar-hide bg-slate-50/50">
+                                <div className="max-w-2xl mx-auto">
+                                    <div className="bg-white p-8 rounded-xl shadow-sm border border-slate-200">
+                                        <div className="flex items-center gap-3 mb-6 border-b border-slate-100 pb-4">
+                                            <div className="p-2 bg-owly-light rounded-lg">
+                                                <Icon name="file-text" className="text-owly-teal w-6 h-6" />
+                                            </div>
+                                            <div>
+                                                <h2 className="text-xl font-bold text-slate-800">Clinical Narrative</h2>
+                                                <p className="text-xs text-slate-500">Auto-generated summary for medical records</p>
+                                            </div>
+                                        </div>
+
+                                        {Object.keys(cansRatings).length === 0 ? (
+                                            <div className="text-center py-10 text-slate-500">
+                                                <p className="mb-4">No data available yet to generate a report.</p>
+                                                <p className="text-xs">Complete part of the assessment first.</p>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                {!narrativeReport && !generatingReport && (
+                                                    <div className="text-center py-6">
+                                                        <p className="text-slate-600 mb-6">
+                                                            Ready to generate a summary based on {Object.keys(cansRatings).length} rated items.
+                                                        </p>
+                                                        <button
+                                                            onClick={generateNarrative}
+                                                            className="bg-owly-teal hover:bg-owly-dark text-white px-6 py-3 rounded-lg font-medium transition-colors flex items-center gap-2 mx-auto shadow-md shadow-owly-teal/20"
+                                                        >
+                                                            <Icon name="sparkles" size={16} /> Generate Narrative
+                                                        </button>
+                                                    </div>
+                                                )}
+
+                                                {generatingReport && (
+                                                    <div className="py-12 flex flex-col items-center justify-center text-owly-teal">
+                                                        <div className="w-8 h-8 border-4 border-owly-light border-t-owly-teal rounded-full animate-spin mb-4"></div>
+                                                        <span className="text-sm font-medium animate-pulse">Owly is drafting the report...</span>
+                                                    </div>
+                                                )}
+
+                                                {narrativeReport && (
+                                                    <div className="prose prose-slate max-w-none fade-in">
+                                                        <div className="whitespace-pre-wrap text-slate-700 leading-relaxed text-justify bg-slate-50 p-6 rounded-lg border border-slate-100">
+                                                            {narrativeReport}
+                                                        </div>
+                                                        <div className="mt-6 flex justify-end">
+                                                            <button
+                                                                onClick={() => navigator.clipboard.writeText(narrativeReport)}
+                                                                className="text-xs font-medium text-slate-500 hover:text-owly-teal flex items-center gap-2 transition-colors"
+                                                            >
+                                                                <Icon name="copy" size={14} className="mr-1" /> Copy to Clipboard
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB CONTENT: CARE PLAN */}
+                        {activeTab === 'plan' && (
+                            <div className="flex-1 overflow-y-auto p-8 scrollbar-hide bg-slate-50/50">
+                                <div className="max-w-2xl mx-auto">
+                                    <div className="flex items-center gap-3 mb-6">
+                                        <div className="p-2 bg-red-50 rounded-lg">
+                                            <Icon name="stethoscope" className="text-red-500 w-6 h-6" />
+                                        </div>
+                                        <div>
+                                            <h2 className="text-xl font-bold text-slate-800">Actionable Needs</h2>
+                                            <p className="text-xs text-slate-500">Items rated 2 or 3 requiring intervention</p>
+                                        </div>
+                                    </div>
+
+                                    {Object.keys(cansRatings).length === 0 ? (
+                                        <div className="text-center py-10 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">
+                                            No assessment data available.
+                                        </div>
+                                    ) : (
+                                        <div className="space-y-6">
+                                            {/* Filter for items rated 2 or 3 */}
+                                            {Object.values(cansRatings).filter(r => r.rating >= 2).length === 0 && (
+                                                <div className="bg-emerald-50 text-emerald-800 p-6 rounded-xl border border-emerald-100 text-center">
+                                                    <Icon name="check-circle" className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                                                    <p className="font-medium">No actionable needs identified yet.</p>
+                                                    <p className="text-xs opacity-75 mt-1">Items rated 0 or 1 do not typically require immediate intervention planning.</p>
+                                                </div>
+                                            )}
+
+                                            {Object.values(cansRatings).filter(r => r.rating >= 2).map((rating) => (
+                                                <div key={rating.id} className="bg-white rounded-xl border border-red-100 shadow-sm overflow-hidden">
+                                                    <div className="p-4 border-b border-red-50 bg-red-50/30 flex justify-between items-center">
+                                                        <div className="flex items-center gap-3">
+                                                            <RatingBadge rating={rating.rating} />
+                                                            <h3 className="font-bold text-slate-800">{
+                                                                // Find label from domains
+                                                                Object.values(CANS_DOMAINS).flat().find(i => i.id === rating.id)?.label || rating.id
+                                                            }</h3>
+                                                        </div>
+                                                        {!carePlan[rating.id] && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    generateInterventions(rating.id, rating.id, rating.rating);
+                                                                }}
+                                                                disabled={generatingPlanId === rating.id}
+                                                                className="text-xs bg-white border border-owly-teal text-owly-teal hover:bg-owly-light px-4 py-2 rounded-full font-medium transition-colors flex items-center gap-2 shadow-sm"
+                                                            >
+                                                                {generatingPlanId === rating.id ? (
+                                                                    <span className="w-3 h-3 border-2 border-owly-light border-t-owly-teal rounded-full animate-spin"></span>
+                                                                ) : (
+                                                                    <Icon name="sparkles" size={14} />
+                                                                )}
+                                                                Generate Interventions
+                                                            </button>
+                                                        )}
+                                                    </div>
+                                                    <div className="p-5">
+                                                        <p className="text-sm text-slate-600 mb-4 italic pl-3 border-l-2 border-slate-200">"{rating.rationale}"</p>
+
+                                                        {carePlan[rating.id] && (
+                                                            <div className="bg-slate-50 p-5 rounded-xl border border-slate-100 fade-in relative overflow-hidden">
+                                                                <div className="absolute top-0 left-0 w-1 h-full bg-owly-gold"></div>
+                                                                <h4 className="text-xs font-bold text-owly-teal uppercase tracking-wide mb-3 flex items-center gap-2">
+                                                                    <Icon name="lightbulb" size={14} /> Owly Suggestions
+                                                                </h4>
+                                                                <div
+                                                                    className="text-sm text-slate-700 space-y-2 list-disc pl-4"
+                                                                    dangerouslySetInnerHTML={{ __html: carePlan[rating.id] }}
+                                                                ></div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* TAB CONTENT: ANALYTICS */}
+                        {activeTab === 'analytics' && (
+                            <div className="flex-1 overflow-y-auto p-8 scrollbar-hide bg-slate-50/50">
+                                <div className="max-w-3xl mx-auto">
+                                    <div className="flex items-center gap-3 mb-6">
+                                        <div className="p-2 bg-blue-100 rounded-lg">
+                                            <Icon name="bar-chart-3" className="text-blue-600 w-6 h-6" />
+                                        </div>
+                                        <div>
+                                            <h2 className="text-xl font-bold text-slate-800">Assessment Analytics</h2>
+                                            <p className="text-xs text-slate-500">Overview of needs and strengths</p>
+                                        </div>
+                                    </div>
+
+                                    {Object.keys(cansRatings).length === 0 ? (
+                                        <div className="text-center py-10 text-slate-400 border-2 border-dashed border-slate-200 rounded-xl">
+                                            No assessment data available.
+                                        </div>
+                                    ) : (
+                                        <div className="grid gap-6">
+                                            {/* Overview Stats */}
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col items-center justify-center">
+                                                    <span className="text-4xl font-bold text-owly-teal mb-2">{Object.keys(cansRatings).length}</span>
+                                                    <span className="text-sm text-slate-500 uppercase tracking-wide font-semibold">Total Rated Items</span>
+                                                </div>
+                                                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col items-center justify-center">
+                                                    <span className="text-4xl font-bold text-red-500 mb-2">{calculateActionableNeeds()}</span>
+                                                    <span className="text-sm text-slate-500 uppercase tracking-wide font-semibold">Actionable Needs (2/3)</span>
+                                                </div>
+                                                <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm flex flex-col items-center justify-center">
+                                                    <span className="text-4xl font-bold text-red-700 mb-2">{getHighestPriorityItems().length}</span>
+                                                    <span className="text-sm text-slate-500 uppercase tracking-wide font-semibold">Immediate Needs (3)</span>
+                                                </div>
+                                            </div>
+
+                                            {/* Domain Breakdown */}
+                                            <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm">
+                                                <h3 className="font-bold text-slate-800 mb-4 text-sm uppercase tracking-wide">Actionable Needs by Domain</h3>
+                                                <div className="space-y-4">
+                                                    {Object.entries(calculateDomainBreakdown()).map(([domain, count]) => {
+                                                        const totalItems = CANS_DOMAINS[domain].length;
+                                                        const percentage = (count / totalItems) * 100;
+                                                        return (
+                                                            <div key={domain}>
+                                                                <div className="flex justify-between text-xs font-medium text-slate-600 mb-1">
+                                                                    <span>{domain}</span>
+                                                                    <span>{count} / {totalItems} items</span>
+                                                                </div>
+                                                                <div className="w-full bg-slate-100 rounded-full h-2.5">
+                                                                    <div
+                                                                        className={`h-2.5 rounded-full ${count > 0 ? 'bg-owly-teal' : 'bg-slate-300'}`}
+                                                                        style={{ width: `${Math.max(percentage, 2)}%` }}
+                                                                    ></div>
+                                                                </div>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+
+                                            {/* High Priority List */}
+                                            {getHighestPriorityItems().length > 0 && (
+                                                <div className="bg-red-50 p-6 rounded-xl border border-red-100 shadow-sm">
+                                                    <h3 className="font-bold text-red-800 mb-4 flex items-center gap-2">
+                                                        <Icon name="alert-triangle" size={16} />
+                                                        Immediate Action Required (Rating 3)
+                                                    </h3>
+                                                    <div className="space-y-2">
+                                                        {getHighestPriorityItems().map((item) => (
+                                                            <div key={item.id} className="bg-white p-3 rounded border border-red-200 text-sm text-slate-700 flex justify-between items-center">
+                                                                <span className="font-medium">
+                                                                    {Object.values(CANS_DOMAINS).flat().find(i => i.id === item.id)?.label || item.id}
+                                                                </span>
+                                                                <span className="bg-red-100 text-red-700 text-xs px-2 py-1 rounded font-bold">3</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+
+                    </div>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+
+</html>
