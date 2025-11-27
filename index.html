@@ -270,8 +270,8 @@ Start the conversation by introducing yourself as Owly and asking for the child'
 
                         {/* Bubble */}
                         <div className={`p-3.5 rounded-2xl text-sm shadow-sm leading-relaxed ${isAI
-                                ? 'bg-white text-slate-800 border border-slate-200 rounded-tl-none'
-                                : 'bg-owly-teal text-white rounded-tr-none'
+                            ? 'bg-white text-slate-800 border border-slate-200 rounded-tl-none'
+                            : 'bg-owly-teal text-white rounded-tr-none'
                             }`}>
                             {msg.text}
                         </div>
@@ -284,8 +284,8 @@ Start the conversation by introducing yourself as Owly and asking for the child'
             <button
                 onClick={onClick}
                 className={`flex items-center gap-2 px-4 py-3 text-sm font-bold border-b-4 transition-colors ${active
-                        ? 'border-owly-gold text-owly-teal bg-owly-light/30'
-                        : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50'
+                    ? 'border-owly-gold text-owly-teal bg-owly-light/30'
+                    : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50'
                     }`}
             >
                 <Icon name={icon} size={16} />
@@ -294,7 +294,16 @@ Start the conversation by introducing yourself as Owly and asking for the child'
         );
 
         const App = () => {
-            const [apiKey] = React.useState("AIzaSyBE-AAa6ssMVMpeZgtUj42HMjThHYnsa2A");
+            const [apiKey, setApiKey] = React.useState(() => {
+                const storedKey = localStorage.getItem("cans_api_key");
+                if (storedKey) return storedKey;
+                const userKey = window.prompt("Please enter your Google Gemini API Key:");
+                if (userKey) {
+                    localStorage.setItem("cans_api_key", userKey);
+                    return userKey;
+                }
+                return "";
+            });
             const [messages, setMessages] = React.useState([]);
             const [input, setInput] = React.useState("");
             const [loading, setLoading] = React.useState(false);
